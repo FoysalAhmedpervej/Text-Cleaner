@@ -1,291 +1,173 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Clutter-Free Reader & Printer (Gemini-Powered)</title>
-    <!-- Load Tailwind CSS for styling -->
-    <script src="https://cdn.tailwindcss.com"></script>
-    <style>
-        /* Custom styles for professional look and feel */
-        body {
-            font-family: 'Inter', sans-serif;
-            background-color: #f7f9fb;
-        }
-        .container {
-            max-width: 900px;
-        }
-        /* Custom print styling: Hide everything except the cleaned output */
-        @media print {
-            body * {
-                visibility: hidden;
-            }
-            #cleanedOutput, #cleanedOutput * {
-                visibility: visible;
-                /* Ensure high contrast for printing */
-                color: #000; 
-                background-color: #fff;
-            }
-            #cleanedOutput {
-                position: absolute;
-                left: 0;
-                top: 0;
-                width: 100%;
-                min-height: 100vh; /* Use full height for printout */
-                padding: 40px;
-                margin: 0;
-                font-size: 12pt;
-                line-height: 1.6;
-                box-shadow: none;
-                border: none;
-                /* Reset Tailwind classes that might interfere with print layout */
-                background-color: white; 
-                padding: 0; 
-            }
-            .no-print {
-                display: none;
-            }
-        }
-    </style>
-    <script>
-        tailwind.config = {
-            theme: {
-                extend: {
-                    colors: {
-                        'gemini-blue': '#4285F4',
-                        'gemini-dark': '#1A73E8',
-                    }
-                }
-            }
-        }
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Gemini Equation Cleaner</title>
+<script src="https://cdn.tailwindcss.com"></script>
 
-        // --- Firebase Globals (Required for environment, though not used for persistence here) ---
-        const __app_id = 'text-cleaner';
-        const __firebase_config = '{}';
-        const __initial_auth_token = '';
-        // --- End Firebase Globals ---
+<!-- MathJax -->
+<script>
+  window.MathJax = {
+    tex: { inlineMath: [['$', '$'], ['\\(', '\\)']] },
+    svg: { fontCache: 'global' }
+  };
+</script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js"></script>
 
-        const MODEL_NAME = 'gemini-2.5-flash-preview-09-2025';
-
-        /**
-         * Toggles the visibility of the raw text input container and updates the button text.
-         */
-        function toggleRawTextInput() {
-            const container = document.getElementById('rawInputContainer');
-            const button = document.getElementById('toggleRawTextButton');
-
-            if (container.classList.contains('hidden')) {
-                container.classList.remove('hidden');
-                button.textContent = 'Hide Raw Input Area';
-            } else {
-                container.classList.add('hidden');
-                button.textContent = 'Show Raw Input Area';
-            }
-        }
-
-        /**
-         * Generic function to make a robust API call with exponential backoff.
-         * @param {string} url - API endpoint URL.
-         * @param {object} options - Fetch options (method, headers, body).
-         * @param {number} retries - Current number of retries.
-         * @returns {Promise<Response>}
-         */
-        async function robustFetch(url, options, retries = 0) {
-            const maxRetries = 5;
-            try {
-                const response = await fetch(url, options);
-                if (response.status === 429 && retries < maxRetries) {
-                    const delay = Math.pow(2, retries) * 1000 + Math.random() * 1000;
-                    console.warn(`Rate limit exceeded (429). Retrying in ${Math.round(delay / 1000)}s...`);
-                    await new Promise(resolve => setTimeout(resolve, delay));
-                    return robustFetch(url, options, retries + 1);
-                }
-                if (!response.ok) {
-                    throw new Error(`API call failed: ${response.statusText}`);
-                }
-                return response;
-            } catch (error) {
-                if (retries < maxRetries) {
-                    const delay = Math.pow(2, retries) * 1000 + Math.random() * 1000;
-                    console.error(`Fetch failed: ${error.message}. Retrying in ${Math.round(delay / 1000)}s...`);
-                    await new Promise(resolve => setTimeout(resolve, delay));
-                    return robustFetch(url, options, retries + 1);
-                }
-                throw new Error(`Exceeded maximum retries. Last error: ${error.message}`);
-            }
-        }
-
-        /**
-         * Calls the Gemini API to clean the text.
-         */
-        async function geminiCleanText() {
-            const rawText = document.getElementById('rawText').value.trim();
-            const outputDiv = document.getElementById('cleanedOutput');
-            const statusDiv = document.getElementById('statusMessage');
-            const printButton = document.getElementById('printButton');
-            const cleanButton = document.getElementById('cleanButton');
-
-            if (rawText.length === 0) {
-                statusDiv.textContent = 'Please paste some text to clean.';
-                statusDiv.classList.remove('hidden', 'text-green-600', 'text-red-500');
-                statusDiv.classList.add('text-gemini-dark');
-                outputDiv.textContent = 'The cleaned text will appear here.';
-                printButton.classList.add('hidden');
-                return;
-            }
-
-            // State: Disable buttons and show loading
-            cleanButton.disabled = true;
-            cleanButton.innerHTML = '<svg class="animate-spin -ml-1 mr-3 h-5 w-5 text-white inline" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg> Cleaning...';
-            
-            statusDiv.textContent = 'Processing text with Gemini...';
-            statusDiv.classList.remove('hidden', 'text-green-600', 'text-red-500');
-            statusDiv.classList.add('text-gemini-dark');
-            outputDiv.textContent = '';
-            printButton.classList.add('hidden');
-
-            try {
-                // System instruction to guide the model's behavior
-                const systemPrompt = "You are a professional text extraction and cleaning tool. Your task is to take the user's copied text (often from a webpage, article, or PDF) and strictly extract only the core, main, readable content. You MUST identify and remove all extraneous content such as navigation links, advertisements, headers, footers, timestamps, image captions, suggested reading sections, social media sharing prompts, and other boilerplate or junk text. ONLY return the clean, continuous, raw body of the article or document. Do not include any introductory titles, headings, or concluding phrases of your own. Preserve the original paragraph breaks and simple list structures.";
-
-                const apiKey = "AIzaSyC-X8lrzT3M1mAxvCE43EDmx0WL_nuIF_Q"; // Canvas environment provides API key
-                const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_NAME}:generateContent?key=${apiKey}`;
-
-                const payload = {
-                    contents: [{ parts: [{ text: rawText }] }],
-                    systemInstruction: {
-                        parts: [{ text: systemPrompt }]
-                    },
-                };
-
-                const response = await robustFetch(apiUrl, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload)
-                });
-
-                const result = await response.json();
-                const cleanedText = result.candidates?.[0]?.content?.parts?.[0]?.text;
-
-                if (cleanedText) {
-                    outputDiv.textContent = cleanedText;
-                    statusDiv.textContent = 'Success! Your text is cleaned and ready.';
-                    statusDiv.classList.remove('text-gemini-dark', 'text-red-500');
-                    statusDiv.classList.add('text-green-600');
-                    printButton.classList.remove('hidden');
-                } else {
-                    const errorMsg = result.error?.message || 'Failed to generate clean text. Check the console for details.';
-                    outputDiv.textContent = `Error: ${errorMsg}`;
-                    statusDiv.textContent = 'An error occurred during processing.';
-                    statusDiv.classList.remove('text-gemini-dark', 'text-green-600');
-                    statusDiv.classList.add('text-red-500');
-                }
-
-            } catch (error) {
-                console.error('Gemini API Error:', error);
-                outputDiv.textContent = `An unexpected error occurred: ${error.message}`;
-                statusDiv.textContent = 'Processing failed due to a network or server error.';
-                statusDiv.classList.remove('text-gemini-dark', 'text-green-600');
-                statusDiv.classList.add('text-red-500');
-            } finally {
-                // State: Re-enable button
-                cleanButton.disabled = false;
-                cleanButton.textContent = 'Clean Text';
-            }
-        }
-
-        /**
-         * Triggers the browser's print dialog for the cleaned text.
-         */
-        function printCleanedText() {
-            if (document.getElementById('cleanedOutput').textContent.trim().length > 0 && 
-                document.getElementById('cleanedOutput').textContent.trim() !== 'The cleaned text will appear here.') {
-                window.print();
-            } else {
-                document.getElementById('statusMessage').textContent = 'Cannot print: Cleaned text area is empty or not yet processed.';
-                document.getElementById('statusMessage').classList.remove('hidden', 'text-green-600', 'text-gemini-dark');
-                document.getElementById('statusMessage').classList.add('text-red-500');
-            }
-        }
-    </script>
+<style>
+  body { font-family: 'Inter', sans-serif; background-color: #f7f9fb; padding: 40px; }
+  .container { max-width: 800px; margin: auto; background: white; padding: 25px; border-radius: 12px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
+  textarea { width: 100%; height: 180px; font-size: 15px; border: 1px solid #ccc; border-radius: 8px; padding: 10px; resize: vertical; }
+  .btns { display: flex; justify-content: center; gap: 10px; margin-top: 15px; flex-wrap: wrap; }
+  button { background-color: #0078d4; color: white; border: none; border-radius: 6px; padding: 10px 16px; cursor: pointer; font-size: 14px; transition: background 0.2s; }
+  button:hover { background-color: #005fa3; }
+  #output { background: #fafafa; border-radius: 8px; padding: 20px; margin-top: 25px; white-space: pre-wrap; font-size: 16px; border: 1px solid #ddd; min-height: 150px; }
+  .hidden { display: none; }
+  
+  /* Keep content on single line - no line breaks */
+  .no-break { 
+    white-space: nowrap !important; 
+    display: inline !important;
+  }
+  
+  .no-break * {
+    white-space: nowrap !important;
+    display: inline !important;
+  }
+  
+  /* MathJax inline fix */
+  mjx-container[jax="SVG"][display="false"] { 
+    display: inline-block !important; 
+    white-space: nowrap !important; 
+    vertical-align: middle !important; 
+  }
+  
+  @media print {
+    body * { visibility: hidden; }
+    #output, #output * { visibility: visible; color: #000; background: #fff; }
+    #output { position: absolute; top: 0; left: 0; width: 100%; padding: 40px; font-size: 12pt; line-height: 1.6; }
+    .no-break { white-space: nowrap !important; }
+  }
+</style>
 </head>
-<body class="p-4 md:p-8">
+<body>
+<div class="container">
+  <h2 class="text-center text-2xl font-bold mb-6">Gemini Equation Cleaner</h2>
 
-    <div class="container mx-auto">
-        <header class="text-center mb-8 no-print">
-            <h1 class="text-4xl font-extrabold text-gray-800">
-                <span class="text-gemini-blue">Gemini</span> Text Cleanup
-            </h1>
-            <p class="text-gray-600 mt-2">Paste messy, web-copied text below to get a clean, print-ready document.</p>
-        </header>
+  <div id="rawBox">
+    <textarea id="rawInput" placeholder="Paste text with equations, e.g., div J + ∂ρ/∂t = 0 or $E = mc^2$"></textarea>
+  </div>
 
-        <!-- API Explanation Section -->
-        <details class="mb-6 p-4 bg-yellow-50 border border-yellow-200 rounded-lg shadow-inner no-print">
-            <summary class="font-semibold text-yellow-800 cursor-pointer">
-                Click to see: How the Gemini API is used in this file
-            </summary>
-            <div class="mt-3 text-sm text-gray-700">
-                <p class="mb-2">The application uses the Gemini API via a direct <code class="bg-yellow-100 p-0.5 rounded text-gemini-dark font-mono">fetch</code> request in the JavaScript, **without needing a separate server** because this environment handles the security.</p>
-                <ol class="list-decimal list-inside space-y-2 ml-4">
-                    <li>
-                        <strong>Endpoint & Model:</strong> The app targets the <code class="bg-yellow-100 p-0.5 rounded text-gemini-dark font-mono">generateContent</code> endpoint using the powerful <code class="bg-yellow-100 p-0.5 rounded text-gemini-dark font-mono">gemini-2.5-flash-preview-09-2025</code> model.
-                    </li>
-                    <li>
-                        <strong>System Instruction:</strong> The key to cleaning is the detailed <code class="bg-yellow-100 p-0.5 rounded text-gemini-dark font-mono">systemInstruction</code>. This acts as a fixed directive, telling Gemini to exclusively perform the role of a "professional text extraction and cleaning tool" and to strip out all non-essential web clutter.
-                    </li>
-                    <li>
-                        <strong>Request Structure:</strong> The user's input text is packaged into a JSON <code class="bg-yellow-100 p-0.5 rounded text-gemini-dark font-mono">payload</code> along with the system instruction and sent via a secure <code class="bg-yellow-100 p-0.5 rounded text-gemini-dark font-mono">POST</code> request.
-                    </li>
-                    <li>
-                        <strong>Output:</strong> The script parses the resulting JSON to extract the final, cleaned text, which is then displayed in the output area.
-                    </li>
-                </ol>
-            </div>
-        </details>
+  <div class="btns">
+    <button id="toggleRawBtn">Toggle Raw Box</button>
+    <button id="generateBtn">Generate Clean Text</button>
+    <button id="printBtn">Print Cleaned Text</button>
+  </div>
 
-        <!-- Toggle Button for Input Area -->
-        <div class="flex justify-end mb-4 no-print">
-            <button id="toggleRawTextButton" onclick="toggleRawTextInput()" class="text-sm bg-white border border-gray-300 text-gray-700 hover:bg-gray-100 font-medium py-1 px-3 rounded-lg transition duration-150">
-                Hide Raw Input Area
-            </button>
-        </div>
+  <div id="output" class="mt-6">Cleaned text with equations will appear here...</div>
+</div>
 
-        <!-- Input Area -->
-        <div id="rawInputContainer" class="mb-6 no-print">
-            <label for="rawText" class="block text-lg font-semibold text-gray-700 mb-2">1. Paste Raw Text (Ads, Nav, etc.)</label>
-            <textarea id="rawText" rows="12" class="w-full p-4 border-2 border-gray-300 rounded-lg focus:border-gemini-blue focus:ring focus:ring-gemini-blue focus:ring-opacity-50 transition duration-150 shadow-inner" placeholder="Copy a large block of text from an article or report and paste it here. Gemini will strip out all the clutter."></textarea>
-        </div>
+<script>
+const rawBox = document.getElementById('rawBox');
+const toggleRawBtn = document.getElementById('toggleRawBtn');
+const generateBtn = document.getElementById('generateBtn');
+const printBtn = document.getElementById('printBtn');
+const output = document.getElementById('output');
+const textarea = document.getElementById('rawInput');
 
-        <!-- Action Buttons and Status -->
-        <div class="flex flex-col sm:flex-row gap-4 mb-6 no-print">
-            <button id="cleanButton" onclick="geminiCleanText()" class="flex-grow bg-gemini-blue hover:bg-gemini-dark text-white font-bold py-3 px-6 rounded-lg transition duration-300 shadow-md hover:shadow-lg focus:outline-none focus:ring-4 focus:ring-gemini-blue focus:ring-opacity-50">
-                Clean Text
-            </button>
+toggleRawBtn.addEventListener('click', () => rawBox.classList.toggle('hidden'));
 
-            <!-- The Print Button is styled with the printer icon -->
-            <button id="printButton" onclick="printCleanedText()" class="sm:w-auto bg-gray-500 hover:bg-gray-700 text-white font-bold py-3 px-6 rounded-lg transition duration-300 shadow-md hover:shadow-lg hidden focus:outline-none focus:ring-4 focus:ring-gray-500 focus:ring-opacity-50">
-                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 inline-block mr-2" viewBox="0 0 20 20" fill="currentColor">
-                    <path d="M10 2a1 1 0 011 1v1h2a2 2 0 012 2v2a2 2 0 01-2 2h-1v-2H8v2H7a2 2 0 01-2-2V6a2 2 0 012-2h2V3a1 1 0 011-1zM5 10v7h10v-7H5zm2 3a1 1 0 100 2 1 1 0 000-2z" />
-                </svg>
-                Print Cleaned Version
-            </button>
-        </div>
+const MODEL_NAME = "gemini-2.5-flash-preview-09-2025";
+const API_KEY = "AIzaSyC-X8lrzT3M1mAxvCE43EDmx0WL_nuIF_Q";
 
-        <!-- Status Message - ARIA Live Region for accessibility -->
-        <div id="statusMessage" role="status" aria-live="polite" class="text-center text-sm font-medium mb-4 p-2 rounded-lg hidden"></div>
+// Remove line breaks and extra spaces inside brackets
+function cleanBrackets(text) {
+  return text.replace(/\(([^)]+)\)/gs, (match, content) => {
+    const cleaned = content.replace(/\s+/g, ' ').trim();
+    return `(${cleaned})`;
+  });
+}
 
-        <!-- Output Area -->
-        <div class="mb-8">
-            <h2 class="text-xl font-bold text-gray-800 mb-3 no-print">2. Cleaned Output</h2>
-            <div id="cleanedOutput" class="bg-white p-6 border border-gray-200 rounded-lg min-h-[250px] whitespace-pre-wrap shadow-xl text-gray-800 leading-relaxed text-base transition duration-300">
-                The cleaned text will appear here after clicking 'Clean Text'. This area is optimized for direct printing.
-            </div>
-        </div>
+// Clean inline equations - handle multi-line equations
+function cleanInlineEquations(text) {
+  return text.replace(/\$([^$]+)\$/gs, (match, content) => {
+    const cleaned = content.replace(/\s+/g, ' ').trim();
+    return `$${cleaned}$`;
+  });
+}
 
-        <footer class="text-center text-xs text-gray-500 pt-4 border-t border-gray-200 no-print">
-            AI-powered by Google's Gemini.
-        </footer>
-    </div>
+// Preprocess input text - clean before sending to Gemini
+function preprocessText(text) {
+  text = cleanInlineEquations(text);
+  text = cleanBrackets(text);
+  text = text.replace(/\n+/g, '\n').trim();
+  return text;
+}
 
+// Wrap all brackets in no-break spans in the output
+function wrapAllBrackets(html) {
+  html = html.replace(/\(([^)]+)\)/gs, (match, content) => {
+    const cleaned = content.replace(/\s+/g, ' ').trim();
+    return `(${cleaned})`;
+  });
+  
+  return html.replace(/\(([^)]+)\)/g, '<span class="no-break">($1)</span>');
+}
+
+async function geminiCleanText() {
+  let text = textarea.value.trim();
+  if (!text) {
+    output.innerHTML = "⚠️ Please enter some text.";
+    return;
+  }
+  output.innerHTML = "Processing with Gemini...";
+  
+  text = preprocessText(text);
+
+  try {
+    const payload = {
+      contents: [{ parts: [{ text }] }],
+      system_instruction: { parts: [{ text: `
+        You are a scientific text cleaner.
+        - Clean all extra spaces and unwanted characters.
+        - Ensure all equations use proper LaTeX delimiters ($ for inline, $$ for display).
+        - Keep variables and equations in brackets like (x + y) intact on single lines.
+        - Return HTML with <p>, <ul>, <ol>, <br> for lists.
+        - Do not add line breaks within equations or bracketed expressions.
+        - Preserve the content exactly as given, just format it nicely.
+      ` }] }
+    };
+
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${MODEL_NAME}:generateContent?key=${API_KEY}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+
+    const result = await res.json();
+    let cleanedHTML = result?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "⚠️ No output generated.";
+
+    cleanedHTML = cleanedHTML.replace(/```html\n?/g, '').replace(/```\n?/g, '');
+    cleanedHTML = wrapAllBrackets(cleanedHTML);
+
+    output.innerHTML = cleanedHTML;
+    if (window.MathJax) MathJax.typesetPromise();
+
+  } catch (err) {
+    output.innerHTML = "❌ Error: " + err.message;
+  }
+}
+
+generateBtn.addEventListener('click', geminiCleanText);
+
+printBtn.addEventListener('click', () => {
+  if (!output.innerText.trim()) { 
+    alert("No content to print!"); 
+    return; 
+  }
+  window.print();
+});
+</script>
 </body>
 </html>
